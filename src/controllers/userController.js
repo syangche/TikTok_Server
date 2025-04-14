@@ -156,49 +156,103 @@ exports.loginUser = async (req, res) => {
   }
 };
 
+exports.getUserVideos = async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`Getting videos for user ID: ${id}`);
+    
+    // Check if user exists
+    const userExists = await prisma.user.findUnique({
+      where: { id: parseInt(id) },
+    });
+    
+    if (!userExists) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Get user's videos
+    const videos = await prisma.video.findMany({
+      where: {
+        userId: parseInt(id),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            avatar: true,
+          },
+        },
+        _count: {
+          select: {
+            likes: true,
+            comments: true,
+          },
+        },
+      },
+    });
+    
+    console.log(`Found ${videos.length} videos for user ${id}`);
+    
+    // Format videos with count data
+    const formattedVideos = videos.map(video => ({
+      ...video,
+      likeCount: video._count.likes,
+      commentCount: video._count.comments,
+      _count: undefined,
+    }));
+    
+    return res.status(200).json({
+      videos: formattedVideos,
+    });
+  } catch (error) {
+    console.error(`Error getting videos for user ${req.params.id}:`, error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Update user
 exports.updateUser = async (req, res) => {
   try {
     const { id } = req.params;
+    // Log what's being received
+    console.log('Update user request body:', req.body);
+    console.log('Update user request files:', req.files);
+    
+    // Extract form data
     const { name, bio } = req.body;
+    let avatarPath = null;
     
-    // Check if user exists
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(id) }
-    });
-    
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+    // Handle avatar file if uploaded
+    if (req.files && req.files.avatar) {
+      const avatarFile = req.files.avatar[0];
+      avatarPath = `/uploads/${avatarFile.filename}`;
     }
     
-    // Prepare update data
+    // Build update data object
     const updateData = {
-      updatedAt: new Date()
+      ...(name && { name }),
+      ...(bio && { bio }),
+      ...(avatarPath && { avatar: avatarPath }),
     };
     
-    // Add name and bio if provided
-    if (name !== undefined) updateData.name = name;
-    if (bio !== undefined) updateData.bio = bio;
-    
-    // Handle avatar file upload
-    if (req.file) {
-      // Save the path to the uploaded file
-      updateData.avatar = `/uploads/${req.file.filename}`;
-    }
-    
-    // Update user
+    // Update user in database
     const updatedUser = await prisma.user.update({
       where: { id: parseInt(id) },
-      data: updateData
+      data: updateData,
     });
     
     // Remove password from response
-    const { password: _, ...userWithoutPassword } = updatedUser;
+    const { password, ...userWithoutPassword } = updatedUser;
     
     res.status(200).json(userWithoutPassword);
   } catch (error) {
     console.error(`Error updating user ${req.params.id}:`, error);
-    res.status(500).json({ message: 'Failed to update user', error: error.message });
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -321,35 +375,14 @@ exports.getUserFollowing = async (req, res) => {
 
 exports.followUser = async (req, res) => {
   try {
-    const { id } = req.params; // The user to follow
-    const currentUserId = req.user.id; // From auth middleware
+    const { id } = req.params; // User to follow
+    const currentUserId = req.user.id; // Current user
     
-    // Check if users exist
-    const userToFollow = await prisma.user.findUnique({
-      where: { id: parseInt(id) }
-    });
-    
-    if (!userToFollow) {
-      return res.status(404).json({ message: 'User not found' });
-    }
+    console.log(`User ${currentUserId} is trying to follow user ${id}`);
     
     // Prevent following yourself
     if (parseInt(id) === currentUserId) {
       return res.status(400).json({ message: 'You cannot follow yourself' });
-    }
-    
-    // Check if already following
-    const existingFollow = await prisma.follow.findUnique({
-      where: {
-        followerId_followingId: {
-          followerId: currentUserId,
-          followingId: parseInt(id)
-        }
-      }
-    });
-    
-    if (existingFollow) {
-      return res.status(400).json({ message: 'Already following this user' });
     }
     
     // Create follow relationship
@@ -360,7 +393,17 @@ exports.followUser = async (req, res) => {
       }
     });
     
-    res.status(200).json({ message: 'User followed successfully' });
+    // Get updated follower count
+    const followerCount = await prisma.follow.count({
+      where: {
+        followingId: parseInt(id)
+      }
+    });
+    
+    res.status(200).json({ 
+      message: 'User followed successfully',
+      followerCount
+    });
   } catch (error) {
     console.error('Error following user:', error);
     res.status(500).json({ message: 'Server error' });
@@ -369,8 +412,10 @@ exports.followUser = async (req, res) => {
 
 exports.unfollowUser = async (req, res) => {
   try {
-    const { id } = req.params; // The user to unfollow
-    const currentUserId = req.user.id; // From auth middleware
+    const { id } = req.params; // User to unfollow
+    const currentUserId = req.user.id; // Current user
+    
+    console.log(`User ${currentUserId} is trying to unfollow user ${id}`);
     
     // Delete follow relationship
     await prisma.follow.delete({
@@ -382,13 +427,19 @@ exports.unfollowUser = async (req, res) => {
       }
     });
     
-    res.status(200).json({ message: 'User unfollowed successfully' });
+    // Get updated follower count
+    const followerCount = await prisma.follow.count({
+      where: {
+        followingId: parseInt(id)
+      }
+    });
+    
+    res.status(200).json({ 
+      message: 'User unfollowed successfully',
+      followerCount
+    });
   } catch (error) {
     console.error('Error unfollowing user:', error);
-    // If relationship doesn't exist, return success anyway
-    if (error.code === 'P2025') {
-      return res.status(200).json({ message: 'User unfollowed successfully' });
-    }
     res.status(500).json({ message: 'Server error' });
   }
 };

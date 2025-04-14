@@ -5,9 +5,13 @@ const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
 
 // Public routes
+
+router.get('/following', protect, videoController.getFollowingVideos);
+
 router.get('/', videoController.getAllVideos);
 router.get('/:id', videoController.getVideoById);
 router.get('/:id/comments', videoController.getVideoComments);
+
 
 // Protected routes - note that you're using 'protect' but tried to use 'auth' above
 router.post('/', protect, upload.fields([

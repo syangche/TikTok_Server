@@ -1,6 +1,8 @@
 const express = require('express');
 const userController = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
+const { upload } = require('../middleware/upload');
+
 
 const router = express.Router();
 
@@ -13,6 +15,7 @@ router.post('/login', userController.loginUser);
 // Protected routes
 router.put('/:id', protect, userController.updateUser);
 router.delete('/:id', protect, userController.deleteUser);
+router.put('/:id', protect, upload.single('avatar'), userController.updateUser);
 
 // User's videos, followers, following
 router.get('/:id/videos', userController.getUserVideos);

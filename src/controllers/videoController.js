@@ -73,9 +73,15 @@ exports.getVideoById = async (req, res) => {
   try {
     const { id } = req.params;
     
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({ message: 'Invalid video ID' });
+    }
+    
+    const videoId = parseInt(id);
+    
     // Increment views
     await prisma.video.update({
-      where: { id: parseInt(id) },
+      where: { id: videoId },
       data: {
         views: {
           increment: 1
@@ -84,7 +90,7 @@ exports.getVideoById = async (req, res) => {
     });
     
     const video = await prisma.video.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: videoId },
       include: {
         user: {
           select: {
@@ -130,40 +136,134 @@ exports.getVideoById = async (req, res) => {
   }
 };
 
-// // Create video
-// exports.createVideo = async (req, res) => {
-//   try {
-//     const { caption, audioName, videoUrl, thumbnailUrl } = req.body;
-//     const userId = req.user.id;
+// Get videos by user
+exports.getUserVideos = async (req, res) => {
+  try {
+    const { id } = req.params;
     
-//     // Create video
-//     const newVideo = await prisma.video.create({
-//       data: {
-//         caption,
-//         audioName,
-//         videoUrl,
-//         thumbnailUrl,
-//         userId: parseInt(userId)
-//       },
-//       include: {
-//         user: {
-//           select: {
-//             id: true,
-//             username: true,
-//             name: true,
-//             avatar: true
-//           }
-//         }
-//       }
-//     });
+    // Check if user exists
+    const userExists = await prisma.user.findUnique({
+      where: { id: parseInt(id) },
+    });
     
-//     res.status(201).json(newVideo);
-//   } catch (error) {
-//     console.error('Error creating video:', error);
-//     res.status(500).json({ message: 'Failed to create video' });
-//   }
-// };
-// Create video
+    if (!userExists) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    // Get user's videos
+    const videos = await prisma.video.findMany({
+      where: {
+        userId: parseInt(id),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            avatar: true,
+          },
+        },
+        _count: {
+          select: {
+            comments: true,
+            likes: true,
+          },
+        },
+      },
+    });
+    
+    // Format videos with count data
+    const formattedVideos = videos.map(video => ({
+      ...video,
+      likeCount: video._count.likes,
+      commentCount: video._count.comments,
+      _count: undefined,
+    }));
+    
+    res.status(200).json({
+      videos: formattedVideos,
+      totalVideos: videos.length
+    });
+  } catch (error) {
+    console.error(`Error getting videos for user ${req.params.id}:`, error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Get videos for following feed
+exports.getFollowingVideos = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    console.log(`Getting following videos for user: ${userId}`);
+    
+    // Find users that the current user follows
+    const following = await prisma.follow.findMany({
+      where: {
+        followerId: userId,
+      },
+      select: {
+        followingId: true,
+      },
+    });
+    
+    console.log('Following users:', following.map(f => f.followingId));
+    
+    const followingIds = following.map(follow => follow.followingId);
+    
+    // If user doesn't follow anyone, return empty result
+    if (followingIds.length === 0) {
+      return res.status(200).json({ videos: [] });
+    }
+    
+    // Fetch videos from users the current user follows
+    const videos = await prisma.video.findMany({
+      where: {
+        userId: {
+          in: followingIds,
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            avatar: true,
+          },
+        },
+        _count: {
+          select: {
+            comments: true,
+            likes: true,
+          },
+        },
+      },
+    });
+    
+    console.log(`Found ${videos.length} videos from following users`);
+    
+    // Format videos
+    const formattedVideos = videos.map(video => ({
+      ...video,
+      likeCount: video._count.likes,
+      commentCount: video._count.comments,
+      _count: undefined,
+    }));
+    
+    res.status(200).json({ videos: formattedVideos });
+  } catch (error) {
+    console.error('Error getting following videos:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 exports.createVideo = async (req, res) => {
   try {
     const { caption, audioName } = req.body;
