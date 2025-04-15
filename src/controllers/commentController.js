@@ -3,14 +3,28 @@ const prisma = require('../lib/prisma');
 // Get all comments
 exports.getAllComments = async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = parseInt(limit);
+    const { id } = req.params;
+    const { cursor, limit = 20 } = req.query;
+    const limitNum = parseInt(limit) || 20;
     
-    const comments = await prisma.comment.findMany({
-      skip,
-      take,
-      orderBy: { createdAt: 'desc' },
+    // Check if video exists
+    const videoExists = await prisma.video.findUnique({
+      where: { id: parseInt(id) },
+    });
+    
+    if (!videoExists) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+    
+    // Build query options
+    const queryOptions = {
+      where: {
+        videoId: parseInt(id),
+      },
+      take: limitNum + 1, // Take one extra to determine if there are more items
+      orderBy: {
+        createdAt: 'desc', // Newest comments first
+      },
       include: {
         user: {
           select: {
@@ -20,31 +34,69 @@ exports.getAllComments = async (req, res) => {
             avatar: true
           }
         },
-        video: {
+        _count: {
           select: {
-            id: true,
-            caption: true,
-            thumbnailUrl: true
+            likes: true
           }
         },
-        _count: {
-          select: { likes: true }
-        }
+        likes: {
+          select: {
+            userId: true,
+          },
+        },
       }
-    });
+    };
     
-    // Get total count for pagination
-    const totalComments = await prisma.comment.count();
+    // If cursor is provided, filter records after the cursor
+    if (cursor) {
+      queryOptions.cursor = {
+        id: parseInt(cursor),
+      };
+      queryOptions.skip = 1; // Skip the cursor itself
+    }
+    
+    // Get comments
+    const comments = await prisma.comment.findMany(queryOptions);
+    
+    // Check if there are more items
+    const hasNextPage = comments.length > limitNum;
+    
+    // Remove the extra item we used to check for more data
+    if (hasNextPage) {
+      comments.pop();
+    }
+    
+    // If user is logged in, check if they've liked the comments
+    if (req.user) {
+      const userId = req.user.id;
+      
+      // Add isLiked property to comments
+      comments.forEach(comment => {
+        comment.isLiked = comment.likes.some(like => like.userId === userId);
+      });
+    }
+    
+    // Format comments
+    const formattedComments = comments.map(comment => ({
+      ...comment,
+      likeCount: comment._count.likes,
+      _count: undefined,
+      likes: undefined,
+    }));
+    
+    // Get the next cursor from the last item
+    const nextCursor = hasNextPage ? formattedComments[formattedComments.length - 1].id.toString() : null;
     
     res.status(200).json({
-      comments,
-      totalPages: Math.ceil(totalComments / take),
-      currentPage: parseInt(page),
-      totalComments
+      comments: formattedComments,
+      pagination: {
+        nextCursor,
+        hasNextPage,
+      },
     });
   } catch (error) {
-    console.error('Error fetching comments:', error);
-    res.status(500).json({ message: 'Failed to fetch comments' });
+    console.error(`Error getting comments for video ${req.params.id}:`, error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 

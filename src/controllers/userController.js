@@ -156,25 +156,28 @@ exports.loginUser = async (req, res) => {
   }
 };
 
+// Get videos by user with cursor-based pagination
 exports.getUserVideos = async (req, res) => {
   try {
-    const { id } = req.params;
-    console.log(`Getting videos for user ID: ${id}`);
+    const { userId } = req.params;
+    const { cursor, limit = 10 } = req.query;
+    const limitNum = parseInt(limit) || 10;
     
     // Check if user exists
     const userExists = await prisma.user.findUnique({
-      where: { id: parseInt(id) },
+      where: { id: parseInt(userId) },
     });
     
     if (!userExists) {
       return res.status(404).json({ message: 'User not found' });
     }
     
-    // Get user's videos
-    const videos = await prisma.video.findMany({
+    // Build query options
+    const queryOptions = {
       where: {
-        userId: parseInt(id),
+        userId: parseInt(userId),
       },
+      take: limitNum + 1, // Take one extra to determine if there are more items
       orderBy: {
         createdAt: 'desc',
       },
@@ -184,21 +187,38 @@ exports.getUserVideos = async (req, res) => {
             id: true,
             username: true,
             name: true,
-            avatar: true,
-          },
+            avatar: true
+          }
         },
         _count: {
           select: {
             likes: true,
-            comments: true,
-          },
-        },
-      },
-    });
+            comments: true
+          }
+        }
+      }
+    };
     
-    console.log(`Found ${videos.length} videos for user ${id}`);
+    // If cursor is provided, filter records after the cursor
+    if (cursor) {
+      queryOptions.cursor = {
+        id: parseInt(cursor),
+      };
+      queryOptions.skip = 1; // Skip the cursor itself
+    }
     
-    // Format videos with count data
+    // Get user's videos
+    const videos = await prisma.video.findMany(queryOptions);
+    
+    // Check if there are more items
+    const hasNextPage = videos.length > limitNum;
+    
+    // Remove the extra item we used to check for more data
+    if (hasNextPage) {
+      videos.pop();
+    }
+    
+    // Format videos
     const formattedVideos = videos.map(video => ({
       ...video,
       likeCount: video._count.likes,
@@ -206,12 +226,19 @@ exports.getUserVideos = async (req, res) => {
       _count: undefined,
     }));
     
-    return res.status(200).json({
+    // Get the next cursor from the last item
+    const nextCursor = hasNextPage ? formattedVideos[formattedVideos.length - 1].id.toString() : null;
+    
+    res.status(200).json({
       videos: formattedVideos,
+      pagination: {
+        nextCursor,
+        hasNextPage,
+      },
     });
   } catch (error) {
-    console.error(`Error getting videos for user ${req.params.id}:`, error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error(`Error getting videos for user ${req.params.userId}:`, error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -219,31 +246,29 @@ exports.getUserVideos = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    // Log what's being received
-    console.log('Update user request body:', req.body);
-    console.log('Update user request files:', req.files);
+    const userId = parseInt(id);
+    const currentUserId = req.user.id;
     
-    // Extract form data
-    const { name, bio } = req.body;
-    let avatarPath = null;
-    
-    // Handle avatar file if uploaded
-    if (req.files && req.files.avatar) {
-      const avatarFile = req.files.avatar[0];
-      avatarPath = `/uploads/${avatarFile.filename}`;
+    // Check if user can edit this profile
+    if (currentUserId !== userId) {
+      return res.status(403).json({ message: 'Not authorized to update this profile' });
     }
     
-    // Build update data object
-    const updateData = {
-      ...(name && { name }),
-      ...(bio && { bio }),
-      ...(avatarPath && { avatar: avatarPath }),
-    };
+    const updateData = {};
     
-    // Update user in database
+    // Handle text fields
+    if (req.body.name) updateData.name = req.body.name;
+    if (req.body.bio) updateData.bio = req.body.bio;
+    
+    // Handle avatar file if provided
+    if (req.file) {
+      updateData.avatar = `/uploads/${req.file.filename}`;
+    }
+    
+    // Update the user
     const updatedUser = await prisma.user.update({
-      where: { id: parseInt(id) },
-      data: updateData,
+      where: { id: userId },
+      data: updateData
     });
     
     // Remove password from response
@@ -252,7 +277,7 @@ exports.updateUser = async (req, res) => {
     res.status(200).json(userWithoutPassword);
   } catch (error) {
     console.error(`Error updating user ${req.params.id}:`, error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Failed to update user' });
   }
 };
 

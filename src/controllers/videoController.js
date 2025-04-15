@@ -3,15 +3,14 @@ const prisma = require('../lib/prisma');
 // Get all videos
 exports.getAllVideos = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = parseInt(limit);
+    const { cursor, limit = 10 } = req.query;
+    const limitNum = parseInt(limit) || 10;
     
-    const videos = await prisma.video.findMany({
-      skip,
-      take,
+    // Build the query based on the cursor
+    const queryOptions = {
+      take: limitNum + 1, // Take one extra to determine if there are more items
       orderBy: {
-        createdAt: 'desc'
+        createdAt: 'desc', // Most recent videos first
       },
       include: {
         user: {
@@ -29,7 +28,26 @@ exports.getAllVideos = async (req, res) => {
           }
         }
       }
-    });
+    };
+    
+    // If cursor is provided, filter records after the cursor
+    if (cursor) {
+      queryOptions.cursor = {
+        id: parseInt(cursor),
+      };
+      queryOptions.skip = 1; // Skip the cursor itself
+    }
+    
+    // Fetch videos
+    const videos = await prisma.video.findMany(queryOptions);
+    
+    // Check if there are more items
+    const hasNextPage = videos.length > limitNum;
+    
+    // Remove the extra item we used to check for more data
+    if (hasNextPage) {
+      videos.pop();
+    }
     
     // If user is logged in, check if they've liked the videos
     if (req.user) {
@@ -51,20 +69,28 @@ exports.getAllVideos = async (req, res) => {
       });
     }
     
-    // Get total count for pagination
-    const totalVideos = await prisma.video.count();
+    // Format videos with count data
+    const formattedVideos = videos.map(video => ({
+      ...video,
+      likeCount: video._count.likes,
+      commentCount: video._count.comments,
+      _count: undefined,
+    }));
     
+    // Get the next cursor from the last item
+    const nextCursor = hasNextPage ? formattedVideos[formattedVideos.length - 1].id.toString() : null;
     
-    // Send the response only once, after all modifications
-    return res.status(200).json({
-      videos,
-      totalPages: Math.ceil(totalVideos / take),
-      currentPage: parseInt(page),
-      totalVideos
+    // Return videos with pagination metadata
+    res.status(200).json({
+      videos: formattedVideos,
+      pagination: {
+        nextCursor,
+        hasNextPage,
+      },
     });
   } catch (error) {
-    console.error('Error fetching videos:', error);
-    return res.status(500).json({ message: 'Failed to fetch videos' });
+    console.error('Error getting videos:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -136,69 +162,81 @@ exports.getVideoById = async (req, res) => {
   }
 };
 
-// Get videos by user
 exports.getUserVideos = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    // Check if user exists
-    const userExists = await prisma.user.findUnique({
-      where: { id: parseInt(id) },
-    });
-    
-    if (!userExists) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    // Get user's videos
-    const videos = await prisma.video.findMany({
-      where: {
-        userId: parseInt(id),
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            avatar: true,
-          },
-        },
-        _count: {
-          select: {
-            comments: true,
-            likes: true,
-          },
-        },
-      },
-    });
-    
-    // Format videos with count data
-    const formattedVideos = videos.map(video => ({
-      ...video,
-      likeCount: video._count.likes,
-      commentCount: video._count.comments,
-      _count: undefined,
-    }));
-    
-    res.status(200).json({
-      videos: formattedVideos,
-      totalVideos: videos.length
-    });
+    // Remove the query params - just get all videos for the user
+    const response = await apiClient.get(`/users/${userId}/videos`);
+    return response.data;
   } catch (error) {
-    console.error(`Error getting videos for user ${req.params.id}:`, error);
-    res.status(500).json({ message: 'Server error' });
+    console.error(`Error fetching videos for user ${userId}:`, error);
+    throw error;
   }
 };
+
+// Get videos by user
+// exports.getUserVideos = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+    
+//     // Check if user exists
+//     const userExists = await prisma.user.findUnique({
+//       where: { id: parseInt(id) },
+//     });
+    
+//     if (!userExists) {
+//       return res.status(404).json({ message: 'User not found' });
+//     }
+    
+//     // Get user's videos
+//     const videos = await prisma.video.findMany({
+//       where: {
+//         userId: parseInt(id),
+//       },
+//       orderBy: {
+//         createdAt: 'desc',
+//       },
+//       include: {
+//         user: {
+//           select: {
+//             id: true,
+//             username: true,
+//             name: true,
+//             avatar: true,
+//           },
+//         },
+//         _count: {
+//           select: {
+//             comments: true,
+//             likes: true,
+//           },
+//         },
+//       },
+//     });
+    
+//     // Format videos with count data
+//     const formattedVideos = videos.map(video => ({
+//       ...video,
+//       likeCount: video._count.likes,
+//       commentCount: video._count.comments,
+//       _count: undefined,
+//     }));
+    
+//     res.status(200).json({
+//       videos: formattedVideos,
+//       totalVideos: videos.length
+//     });
+//   } catch (error) {
+//     console.error(`Error getting videos for user ${req.params.id}:`, error);
+//     res.status(500).json({ message: 'Server error' });
+//   }
+// };
 
 // Get videos for following feed
 exports.getFollowingVideos = async (req, res) => {
   try {
-    const userId = req.user.id;
-    console.log(`Getting following videos for user: ${userId}`);
+    const userId = req.user.id; // From auth middleware
+    const { cursor, limit = 10 } = req.query;
+    const limitNum = parseInt(limit) || 10;
     
     // Find users that the current user follows
     const following = await prisma.follow.findMany({
@@ -210,22 +248,27 @@ exports.getFollowingVideos = async (req, res) => {
       },
     });
     
-    console.log('Following users:', following.map(f => f.followingId));
-    
     const followingIds = following.map(follow => follow.followingId);
     
     // If user doesn't follow anyone, return empty result
     if (followingIds.length === 0) {
-      return res.status(200).json({ videos: [] });
+      return res.status(200).json({
+        videos: [],
+        pagination: {
+          nextCursor: null,
+          hasNextPage: false,
+        },
+      });
     }
     
-    // Fetch videos from users the current user follows
-    const videos = await prisma.video.findMany({
+    // Build query options
+    const queryOptions = {
       where: {
         userId: {
           in: followingIds,
         },
       },
+      take: limitNum + 1, // Take one extra to determine if there are more items
       orderBy: {
         createdAt: 'desc',
       },
@@ -235,19 +278,36 @@ exports.getFollowingVideos = async (req, res) => {
             id: true,
             username: true,
             name: true,
-            avatar: true,
-          },
+            avatar: true
+          }
         },
         _count: {
           select: {
-            comments: true,
             likes: true,
-          },
-        },
-      },
-    });
+            comments: true
+          }
+        }
+      }
+    };
     
-    console.log(`Found ${videos.length} videos from following users`);
+    // If cursor is provided, filter records after the cursor
+    if (cursor) {
+      queryOptions.cursor = {
+        id: parseInt(cursor),
+      };
+      queryOptions.skip = 1; // Skip the cursor itself
+    }
+    
+    // Fetch videos from users the current user follows
+    const videos = await prisma.video.findMany(queryOptions);
+    
+    // Check if there are more items
+    const hasNextPage = videos.length > limitNum;
+    
+    // Remove the extra item we used to check for more data
+    if (hasNextPage) {
+      videos.pop();
+    }
     
     // Format videos
     const formattedVideos = videos.map(video => ({
@@ -257,7 +317,16 @@ exports.getFollowingVideos = async (req, res) => {
       _count: undefined,
     }));
     
-    res.status(200).json({ videos: formattedVideos });
+    // Get the next cursor from the last item
+    const nextCursor = hasNextPage ? formattedVideos[formattedVideos.length - 1].id.toString() : null;
+    
+    res.status(200).json({
+      videos: formattedVideos,
+      pagination: {
+        nextCursor,
+        hasNextPage,
+      },
+    });
   } catch (error) {
     console.error('Error getting following videos:', error);
     res.status(500).json({ message: 'Server error' });
