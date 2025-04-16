@@ -13,7 +13,6 @@ router.post('/register', userController.registerUser);
 router.post('/login', userController.loginUser);
 
 // Protected routes
-router.put('/:id', protect, userController.updateUser);
 router.delete('/:id', protect, userController.deleteUser);
 router.put('/:id', protect, upload.single('avatar'), userController.updateUser);
 

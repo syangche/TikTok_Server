@@ -246,29 +246,31 @@ exports.getUserVideos = async (req, res) => {
 exports.updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = parseInt(id);
-    const currentUserId = req.user.id;
+    // Log what's being received
+    console.log('Update user request body:', req.body);
+    console.log('Update user request files:', req.files);
     
-    // Check if user can edit this profile
-    if (currentUserId !== userId) {
-      return res.status(403).json({ message: 'Not authorized to update this profile' });
+    // Extract form data
+    const { name, bio } = req.body;
+    let avatarPath = null;
+    
+    // Handle avatar file if uploaded
+    if (req.files && req.files.avatar) {
+      const avatarFile = req.files.avatar[0];
+      avatarPath = `/uploads/${avatarFile.filename}`;
     }
     
-    const updateData = {};
+    // Build update data object
+    const updateData = {
+      ...(name && { name }),
+      ...(bio && { bio }),
+      ...(avatarPath && { avatar: avatarPath }),
+    };
     
-    // Handle text fields
-    if (req.body.name) updateData.name = req.body.name;
-    if (req.body.bio) updateData.bio = req.body.bio;
-    
-    // Handle avatar file if provided
-    if (req.file) {
-      updateData.avatar = `/uploads/${req.file.filename}`;
-    }
-    
-    // Update the user
+    // Update user in database
     const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: updateData
+      where: { id: parseInt(id) },
+      data: updateData,
     });
     
     // Remove password from response
@@ -277,7 +279,7 @@ exports.updateUser = async (req, res) => {
     res.status(200).json(userWithoutPassword);
   } catch (error) {
     console.error(`Error updating user ${req.params.id}:`, error);
-    res.status(500).json({ message: 'Failed to update user' });
+    res.status(500).json({ message: 'Server error' });
   }
 };
 

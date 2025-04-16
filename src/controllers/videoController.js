@@ -333,27 +333,65 @@ exports.getFollowingVideos = async (req, res) => {
   }
 };
 
+// Create video with Supabase storage
 exports.createVideo = async (req, res) => {
   try {
     const { caption, audioName } = req.body;
     const userId = req.user.id;
     
-    // Get file paths from the uploaded files
-    const videoUrl = req.files && req.files.video ? `/uploads/${req.files.video[0].filename}` : null;
-    const thumbnailUrl = req.files && req.files.thumbnail ? `/uploads/${req.files.thumbnail[0].filename}` : null;
-    
-    if (!videoUrl) {
+    // Check if files exist
+    if (!req.files || !req.files.video) {
       return res.status(400).json({ message: 'Video file is required' });
     }
     
-    // Create video in database
+    const videoFile = req.files.video[0];
+    const thumbnailFile = req.files.thumbnail ? req.files.thumbnail[0] : null;
+    
+    // Generate unique file names for storage
+    const videoFileName = storageService.generateUniqueFileName(videoFile.originalname);
+    const videoPath = `user-${userId}/${videoFileName}`;
+    
+    let thumbnailPath = null;
+    
+    // Upload video to Supabase
+    const { fileUrl: videoUrl } = await storageService.uploadFile(
+      'videos',
+      videoPath,
+      fs.readFileSync(videoFile.path)
+    );
+    
+    // Upload thumbnail if it exists
+    let thumbnailUrl = null;
+    if (thumbnailFile) {
+      const thumbnailFileName = storageService.generateUniqueFileName(thumbnailFile.originalname);
+      thumbnailPath = `user-${userId}/${thumbnailFileName}`;
+      
+      const { fileUrl } = await storageService.uploadFile(
+        'thumbnails',
+        thumbnailPath,
+        fs.readFileSync(thumbnailFile.path)
+      );
+      
+      thumbnailUrl = fileUrl;
+    }
+    
+    // Clean up local files after uploading to Supabase
+    fs.unlinkSync(videoFile.path);
+    if (thumbnailFile) {
+      fs.unlinkSync(thumbnailFile.path);
+    }
+    
+    // Create video record in database
     const newVideo = await prisma.video.create({
       data: {
+        userId: parseInt(userId),
         caption,
         audioName,
         videoUrl,
         thumbnailUrl,
-        userId: parseInt(userId)
+        // Store reference to file paths in Supabase for potential deletion later
+        videoStoragePath: videoPath,
+        thumbnailStoragePath: thumbnailPath
       },
       include: {
         user: {
@@ -421,7 +459,7 @@ exports.updateVideo = async (req, res) => {
   }
 };
 
-// Delete video
+// Delete video with Supabase storage cleanup
 exports.deleteVideo = async (req, res) => {
   try {
     const { id } = req.params;
@@ -440,7 +478,16 @@ exports.deleteVideo = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to delete this video' });
     }
     
-    // Delete video
+    // Delete files from Supabase Storage
+    if (video.videoStoragePath) {
+      await storageService.removeFile('videos', video.videoStoragePath);
+    }
+    
+    if (video.thumbnailStoragePath) {
+      await storageService.removeFile('thumbnails', video.thumbnailStoragePath);
+    }
+    
+    // Delete video from database
     await prisma.video.delete({
       where: { id: parseInt(id) }
     });
